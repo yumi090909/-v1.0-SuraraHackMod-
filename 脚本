@@ -1,0 +1,509 @@
+// ==UserScript==
+// @name         即时响应脚本 v1.0 [SuraraHackMod]
+// @namespace    SuraraHackMod
+// @version      1.0
+// @description  Catchon/すららの選択式問題の正解をハイライトし、入力式問題の正解を自動入力します
+// @match        https://lms.catchon.jp/*
+// @match        https://*.surala.jp/*
+// @grant        none
+// @run-at       document-idle
+// ==/UserScript==
+
+(function() {
+    'use strict';
+    if (window.top !== window.self) return;
+
+    // ==========================================
+    // 状態管理
+    // ==========================================
+    var state = {
+        highlightChoice: true,
+        autoFillInput: true,
+        lastProcessedKey: ''
+    };
+
+    var $ = null;
+
+    // ==========================================
+    // GUI 構築
+    // ==========================================
+    function buildGUI() {
+        var panel = document.createElement('div');
+        panel.id = 'surara-hack-panel';
+        panel.innerHTML = `
+            <style>
+                #surara-hack-panel {
+                    position: fixed;
+                    top: 80px;
+                    right: 20px;
+                    width: 248px;
+                    background: linear-gradient(145deg, #2a1a4a, #1a0b2e);
+                    border: 1px solid #8a2be2;
+                    border-radius: 12px;
+                    box-shadow: 0 8px 24px rgba(138, 43, 226, 0.45), 0 0 24px rgba(138, 43, 226, 0.2);
+                    font-family: 'Segoe UI', 'Hiragino Sans', 'Yu Gothic', sans-serif;
+                    color: #e6d5ff;
+                    z-index: 2147483647;
+                    font-size: 13px;
+                    user-select: none;
+                    transition: box-shadow 0.2s;
+                }
+                #surara-hack-panel .shp-header {
+                    display: flex;
+                    align-items: center;
+                    justify-content: space-between;
+                    padding: 10px 12px;
+                    background: linear-gradient(90deg, #6a0dad, #8a2be2);
+                    border-radius: 11px 11px 0 0;
+                    cursor: move;
+                }
+                #surara-hack-panel .shp-title-wrap { display: flex; flex-direction: column; line-height: 1.25; }
+                #surara-hack-panel .shp-title { font-weight: 700; color: #fff; font-size: 13px; letter-spacing: 0.5px; }
+                #surara-hack-panel .shp-subtitle { font-size: 10px; color: #d8b8ff; font-style: italic; }
+                #surara-hack-panel .shp-toggle {
+                    background: rgba(255,255,255,0.15); border: none; color: #fff;
+                    width: 22px; height: 22px; border-radius: 6px; cursor: pointer;
+                    font-size: 14px; line-height: 1; padding: 0;
+                }
+                #surara-hack-panel .shp-toggle:hover { background: rgba(255,255,255,0.3); }
+                #surara-hack-panel .shp-body { padding: 12px; display: block; }
+                #surara-hack-panel.collapsed .shp-body { display: none; }
+                #surara-hack-panel .shp-switch {
+                    display: flex; align-items: center; justify-content: space-between;
+                    padding: 8px 10px; margin-bottom: 8px;
+                    background: rgba(138, 43, 226, 0.15);
+                    border: 1px solid rgba(138, 43, 226, 0.3);
+                    border-radius: 8px; cursor: pointer; transition: background 0.2s;
+                }
+                #surara-hack-panel .shp-switch:hover { background: rgba(138, 43, 226, 0.25); }
+                #surara-hack-panel .shp-switch input { display: none; }
+                #surara-hack-panel .shp-switch .shp-slider {
+                    width: 36px; height: 18px; background: #4a2a6a;
+                    border-radius: 9px; position: relative; transition: background 0.2s;
+                }
+                #surara-hack-panel .shp-switch .shp-slider::after {
+                    content: ''; position: absolute; top: 2px; left: 2px;
+                    width: 14px; height: 14px; background: #b8a8d8;
+                    border-radius: 50%; transition: all 0.2s;
+                }
+                #surara-hack-panel .shp-switch input:checked + .shp-slider { background: #8a2be2; }
+                #surara-hack-panel .shp-switch input:checked + .shp-slider::after { left: 20px; background: #fff; }
+                #surara-hack-panel .shp-switch-label { font-size: 12px; color: #d8b8ff; }
+                #surara-hack-panel .shp-btn {
+                    width: 100%; padding: 9px;
+                    background: linear-gradient(90deg, #6a0dad, #8a2be2);
+                    border: none; border-radius: 8px; color: #fff;
+                    font-size: 12px; font-weight: 700; cursor: pointer;
+                    margin-top: 4px; transition: all 0.2s; letter-spacing: 0.5px;
+                }
+                #surara-hack-panel .shp-btn:hover {
+                    background: linear-gradient(90deg, #8a2be2, #a855f7);
+                    box-shadow: 0 0 12px rgba(138, 43, 226, 0.7);
+                }
+                #surara-hack-panel .shp-btn:active { transform: scale(0.98); }
+                #surara-hack-panel .shp-status {
+                    margin-top: 10px; padding: 6px 8px;
+                    background: rgba(0,0,0,0.3); border-radius: 6px;
+                    font-size: 11px; color: #b8a8d8; text-align: center; min-height: 14px;
+                }
+                #surara-hack-panel .shp-status.ok { color: #7fff9f; }
+                #surara-hack-panel .shp-status.err { color: #ff8080; }
+                #surara-hack-panel .shp-status.busy { color: #ffd700; }
+            </style>
+            <div class="shp-header">
+                <div class="shp-title-wrap">
+                    <span class="shp-title">即时响应脚本 v1.0</span>
+                    <span class="shp-subtitle">[SuraraHackMod]</span>
+                </div>
+                <button class="shp-toggle" title="折りたたみ">−</button>
+            </div>
+            <div class="shp-body">
+                <label class="shp-switch">
+                    <span class="shp-switch-label">選択式ハイライト</span>
+                    <input type="checkbox" id="shp-choice" ${state.highlightChoice ? 'checked' : ''}>
+                    <span class="shp-slider"></span>
+                </label>
+                <label class="shp-switch">
+                    <span class="shp-switch-label">入力式自動入力</span>
+                    <input type="checkbox" id="shp-input" ${state.autoFillInput ? 'checked' : ''}>
+                    <span class="shp-slider"></span>
+                </label>
+                <button class="shp-btn" id="shp-refill">現在の問題を即実行</button>
+                <div class="shp-status" id="shp-status">待機中</div>
+            </div>
+        `;
+        document.body.appendChild(panel);
+
+        document.getElementById('shp-choice').addEventListener('change', function(e) {
+            state.highlightChoice = e.target.checked;
+            if (e.target.checked) state.lastProcessedKey = '';
+            setStatus(e.target.checked ? '選択式ハイライト: ON' : '選択式ハイライト: OFF');
+        });
+        document.getElementById('shp-input').addEventListener('change', function(e) {
+            state.autoFillInput = e.target.checked;
+            if (e.target.checked) state.lastProcessedKey = '';
+            setStatus(e.target.checked ? '入力式自動入力: ON' : '入力式自動入力: OFF');
+        });
+        document.getElementById('shp-refill').addEventListener('click', function() {
+            if (!state.highlightChoice && !state.autoFillInput) {
+                setStatus('すべての機能がOFFです', 'err');
+                return;
+            }
+            processProblem(true);
+        });
+        document.querySelector('#surara-hack-panel .shp-toggle').addEventListener('click', function() {
+            panel.classList.toggle('collapsed');
+            this.textContent = panel.classList.contains('collapsed') ? '+' : '−';
+        });
+
+        makeDraggable(panel, panel.querySelector('.shp-header'));
+    }
+
+    function setStatus(text, type) {
+        var el = document.getElementById('shp-status');
+        if (!el) return;
+        var cls = 'shp-status' + (type ? ' ' + type : '');
+        if (el.textContent === text && el.className === cls) return;
+        el.textContent = text;
+        el.className = cls;
+    }
+
+    function makeDraggable(el, handle) {
+        var isDown = false, offsetX = 0, offsetY = 0;
+        handle.addEventListener('mousedown', function(e) {
+            isDown = true;
+            offsetX = e.clientX - el.offsetLeft;
+            offsetY = e.clientY - el.offsetTop;
+            handle.style.cursor = 'grabbing';
+        });
+        document.addEventListener('mousemove', function(e) {
+            if (!isDown) return;
+            el.style.left = (e.clientX - offsetX) + 'px';
+            el.style.top = (e.clientY - offsetY) + 'px';
+            el.style.right = 'auto';
+        });
+        document.addEventListener('mouseup', function() {
+            isDown = false;
+            handle.style.cursor = 'move';
+        });
+    }
+
+    // ==========================================
+    // 問題画面・キー生成
+    // ==========================================
+    function getMainWindow() {
+        try {
+            if (window.main && window.main.document) return window.main;
+            var iframe = document.querySelector('iframe[name="main"]');
+            if (iframe && iframe.contentWindow) return iframe.contentWindow;
+        } catch(e) {}
+        return null;
+    }
+
+    function getTargetDoc() {
+        var mainWin = getMainWindow();
+        if (!mainWin) return null;
+        var doc = mainWin.document;
+        if (doc.getElementById('ExpForm')) return doc;
+        var iframes = doc.getElementsByTagName('iframe');
+        for (var i = 0; i < iframes.length; i++) {
+            try {
+                if (iframes[i].contentDocument && iframes[i].contentDocument.getElementById('ExpForm')) {
+                    return iframes[i].contentDocument;
+                }
+            } catch(e) {}
+        }
+        return null;
+    }
+
+    function makeKey(targetDoc, form) {
+        var url = form.getAttribute('action') || targetDoc.location.pathname;
+        var h2 = targetDoc.querySelector('h2');
+        var qu01 = targetDoc.querySelector('#qu01');
+        var problemNum = h2 ? h2.textContent.trim() : '';
+        var problemText = qu01 ? qu01.textContent.trim().substring(0, 50) : '';
+        return url + '|' + problemNum + '|' + problemText;
+    }
+
+    // ==========================================
+    // メイン処理
+    // ==========================================
+    function processProblem(force) {
+        var targetDoc = getTargetDoc();
+        if (!targetDoc) return;
+        var form = targetDoc.getElementById('ExpForm');
+        if (!form) return;
+
+        var key = makeKey(targetDoc, form);
+        if (!force && key === state.lastProcessedKey) return;
+        state.lastProcessedKey = key;
+
+        targetDoc.querySelectorAll('.shm-correct-highlight').forEach(function(el) {
+            el.classList.remove('shm-correct-highlight');
+        });
+
+        var url = form.getAttribute('action') || targetDoc.location.pathname;
+        var isInput = hasInputFields(targetDoc);
+        var isChoice = hasChoiceInputs(targetDoc);
+
+        if (isInput) {
+            if (state.autoFillInput) {
+                setStatus('入力式の正解を取得中...', 'busy');
+                fetchAnswer(targetDoc, form, url, function(answers) {
+                    fillInputs(targetDoc, answers);
+                });
+            } else {
+                setStatus('入力式自動入力: OFF');
+            }
+        } else if (isChoice) {
+            if (state.highlightChoice) {
+                setStatus('選択式の正解を取得中...', 'busy');
+                fetchAnswer(targetDoc, form, url, function(answers) {
+                    highlightChoices(targetDoc, answers);
+                });
+            } else {
+                setStatus('選択式ハイライト: OFF');
+            }
+        } else {
+            setStatus('対象外の問題');
+        }
+    }
+
+    function hasInputFields(doc) {
+        var found = false;
+        doc.querySelectorAll('input[type="text"], input[type="number"], textarea').forEach(function(el) {
+            if (el.disabled) return;
+            if (!el.name || el.name.indexOf('answer') === -1) return;
+            if (el.classList.contains('ace_text-input')) return;
+            if (el.id === 'prog-noeditable-line') return;
+            found = true;
+        });
+        return found;
+    }
+
+    function hasChoiceInputs(doc) {
+        var found = false;
+        doc.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach(function(el) {
+            if (!el.name || el.name.indexOf('answer') === -1) return;
+            found = true;
+        });
+        return found;
+    }
+
+    // ==========================================
+    // 正解データ取得（共通）
+    // ==========================================
+    function fetchAnswer(targetDoc, form, url, callback) {
+        var key = makeKey(targetDoc, form);
+        $.ajax({
+            url: url,
+            type: 'post',
+            data: {
+                'action': 'answer',
+                'answer_time': 0,
+                'judgment': '',
+                'answer': ''
+            },
+            success: function(data) {
+                var formNow = targetDoc.getElementById('ExpForm');
+                if (!formNow || key !== makeKey(targetDoc, formNow)) return;
+
+                data = data.replace(/<script[\s\S]*?<\/script>/gi, '');
+                var $parsed = $('<div>').html(data);
+
+                var $answerArea = $parsed.find('#qu05');
+                if ($answerArea.length === 0) {
+                    $parsed.find('h3:contains("【正解】")').next().each(function() {
+                        $answerArea = $(this);
+                        return false;
+                    });
+                }
+                if ($answerArea.length === 0) {
+                    setStatus('正解エリアが見つかりません', 'err');
+                    return;
+                }
+
+                var answers = extractAnswers($answerArea);
+                if (answers.length === 0) {
+                    setStatus('正解を抽出できませんでした', 'err');
+                    return;
+                }
+                console.log('[SuraraHackMod] 正解候補:', answers);
+                callback(answers);
+            },
+            error: function() {
+                setStatus('通信エラー', 'err');
+            }
+        });
+    }
+
+    function extractAnswers($answerArea) {
+        var answers = [];
+        var $inputs = $answerArea.find('input');
+        if ($inputs.length > 0) {
+            $inputs.each(function() {
+                answers.push($(this).val() || $(this).attr('value') || '');
+            });
+            return answers;
+        }
+        var $clone = $answerArea.clone();
+        $clone.find('rt, rp').remove();
+        var html = $clone.html() || '';
+        var parts = html.split(/<br\s*\/?>/i);
+        parts.forEach(function(p) {
+            var t = $('<div>').html(p).text().replace(/\u00a0/g, ' ').trim();
+            if (t) answers.push(t);
+        });
+        if (answers.length === 0) {
+            var t = $clone.text().replace(/\u00a0/g, ' ').trim();
+            if (t) answers.push(t);
+        }
+        return answers;
+    }
+
+    // ==========================================
+    // 選択式ハイライト
+    // ==========================================
+    function highlightChoices(targetDoc, correctAnswers) {
+        injectHighlightCSS(targetDoc);
+
+        function normalize(str) {
+            if (!str) return '';
+            var tmp = str.replace(/<br\s*\/?>/gi, ' ');
+            tmp = $('<div>').html(tmp).text();
+            return tmp.replace(/\s+/g, '').trim();
+        }
+
+        var normalizedAnswers = correctAnswers.map(normalize).filter(function(a) { return a; });
+        var count = 0;
+
+        targetDoc.querySelectorAll('input[type="radio"], input[type="checkbox"]').forEach(function(input) {
+            if (!input.name || input.name.indexOf('answer') === -1) return;
+            var valText = normalize(input.value);
+            var labelText = normalize(getLabelText(input));
+            if (!valText && !labelText) return;
+
+            var isCorrect = false;
+            for (var i = 0; i < normalizedAnswers.length; i++) {
+                var ans = normalizedAnswers[i];
+                if (!ans) continue;
+                if ((valText && valText === ans) || (labelText && labelText === ans)) {
+                    isCorrect = true;
+                    break;
+                }
+            }
+            if (isCorrect) {
+                var target = input.closest('label') || input.parentElement;
+                if (target) {
+                    target.classList.add('shm-correct-highlight');
+                    count++;
+                }
+            }
+        });
+
+        if (count > 0) {
+            setStatus(count + ' 個の選択肢を強調', 'ok');
+        } else {
+            setStatus('一致する選択肢なし', 'err');
+        }
+    }
+
+    function getLabelText(input) {
+        var label = input.closest('label');
+        if (label) {
+            var $label = $(label).clone();
+            $label.find('input, rt, rp').remove();
+            return $label.text();
+        }
+        var text = '';
+        var node = input.nextSibling;
+        while (node) {
+            if (node.nodeType === 3) {
+                text += node.textContent;
+            } else if (node.nodeType === 1) {
+                if (node.tagName === 'BR') break;
+                var $node = $(node).clone();
+                $node.find('rt, rp').remove();
+                text += $node.text();
+            }
+            node = node.nextSibling;
+        }
+        if (text.trim()) return text;
+        if (input.parentElement) {
+            var $parent = $(input.parentElement).clone();
+            $parent.find('input, rt, rp').remove();
+            return $parent.text();
+        }
+        return '';
+    }
+
+    function injectHighlightCSS(targetDoc) {
+        var id = 'shm-highlight-style';
+        if (targetDoc.getElementById(id)) return;
+        var style = targetDoc.createElement('style');
+        style.id = id;
+        style.innerHTML = `
+            .shm-correct-highlight {
+                background-color: #e8d5ff !important;
+                border: 2px solid #8a2be2 !important;
+                border-radius: 4px !important;
+                box-shadow: 0 0 6px rgba(138, 43, 226, 0.6) !important;
+                display: inline-block !important;
+            }
+        `;
+        targetDoc.head.appendChild(style);
+    }
+
+    // ==========================================
+    // 入力式自動入力
+    // ==========================================
+    function fillInputs(targetDoc, correctAnswers) {
+        var inputs = [];
+        targetDoc.querySelectorAll('input[type="text"], input[type="number"], textarea').forEach(function(el) {
+            if (el.disabled) return;
+            if (!el.name || el.name.indexOf('answer') === -1) return;
+            if (el.classList.contains('ace_text-input')) return;
+            if (el.id === 'prog-noeditable-line') return;
+            inputs.push(el);
+        });
+
+        inputs.sort(function(a, b) {
+            var ia = parseInt((a.name.match(/\[(\d+)\]/) || [0, 0])[1]);
+            var ib = parseInt((b.name.match(/\[(\d+)\]/) || [0, 0])[1]);
+            return ia - ib;
+        });
+
+        var filled = 0;
+        for (var i = 0; i < inputs.length && i < correctAnswers.length; i++) {
+            inputs[i].value = correctAnswers[i];
+            inputs[i].dispatchEvent(new Event('input', { bubbles: true }));
+            inputs[i].dispatchEvent(new Event('change', { bubbles: true }));
+            try { $(inputs[i]).trigger('input').trigger('change'); } catch(e) {}
+            filled++;
+        }
+
+        if (filled > 0) {
+            setStatus(filled + ' 個の入力欄に書き込み完了', 'ok');
+        } else {
+            setStatus('入力欄が見つかりません', 'err');
+        }
+    }
+
+    // ==========================================
+    // 初期化
+    // ==========================================
+    function waitForJQuery(callback) {
+        if (window.jQuery) {
+            $ = window.jQuery;
+            callback();
+        } else {
+            setTimeout(function() { waitForJQuery(callback); }, 200);
+        }
+    }
+
+    waitForJQuery(function() {
+        buildGUI();
+        setTimeout(function() { processProblem(true); }, 1500);
+        setInterval(function() { processProblem(false); }, 1000);
+    });
+})();
